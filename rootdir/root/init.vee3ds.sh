@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # Start ril-daemon1 for dualsim
-if [ $(getprop persist.radio.multisim.config) -eq dsds ]
+if [ "$(getprop persist.radio.multisim.config)" = "dsds" ]
 then
 	start ril-daemon1
 fi
