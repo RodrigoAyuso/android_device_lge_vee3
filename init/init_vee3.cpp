@@ -59,17 +59,36 @@ bool token_char(char c) {
     return isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' || c == '+';
 }
 
+bool pair_at(const std::string& text, size_t offset, char first, char second) {
+    return offset + 2 <= text.size() &&
+        toupper(static_cast<unsigned char>(text[offset])) == first &&
+        toupper(static_cast<unsigned char>(text[offset + 1])) == second;
+}
+
 void inspect(const std::string& text, bool firmware, Evidence* evidence) {
     for (size_t i = 0; i + 4 <= text.size(); ++i) {
-        if (toupper(static_cast<unsigned char>(text[i])) != 'E' ||
-            (i && isalnum(static_cast<unsigned char>(text[i - 1])))) continue;
-        std::string base = text.substr(i, 4);
+        if (i && isalnum(static_cast<unsigned char>(text[i - 1]))) continue;
+        size_t offset = i;
+        if (pair_at(text, offset, 'L', 'G')) {
+            offset += 2;
+            if (offset < text.size() && text[offset] == '-') ++offset;
+        }
+        if (offset + 4 > text.size() || toupper(static_cast<unsigned char>(text[offset])) != 'E') continue;
+        std::string base = text.substr(offset, 4);
         base[0] = 'E';
         // These are the retail variants supported by this Vee3 device tree.
         if (base != "E425" && base != "E430" && base != "E431" && base != "E435") continue;
-        size_t end = i + 4;
+        size_t end = offset + 4;
         std::string model = "LG-" + base;
-        if (end < text.size() && isalpha(static_cast<unsigned char>(text[end]))) {
+        // LG stock firmware uses identifiers such as LGE425fAT-00-V10i.
+        // AT is a firmware tag, while the preceding optional letter is the SKU suffix.
+        if (firmware && pair_at(text, end, 'A', 'T')) {
+            end += 2;
+        } else if (firmware && end < text.size() &&
+                   isalpha(static_cast<unsigned char>(text[end])) && pair_at(text, end + 1, 'A', 'T')) {
+            model += static_cast<char>(tolower(static_cast<unsigned char>(text[end])));
+            end += 3;
+        } else if (end < text.size() && isalpha(static_cast<unsigned char>(text[end]))) {
             if (end + 1 < text.size() && isalnum(static_cast<unsigned char>(text[end + 1]))) continue;
             model += static_cast<char>(tolower(static_cast<unsigned char>(text[end])));
             ++end;
@@ -80,13 +99,18 @@ void inspect(const std::string& text, bool firmware, Evidence* evidence) {
             size_t stop = end;
             while (stop < text.size() && token_char(text[stop]) && stop - i < PROP_VALUE_MAX - 1U) ++stop;
             std::string version = text.substr(i, stop - i);
-            size_t marker = version.find("-V");
+            std::string upper = version;
+            for (size_t j = 0; j < upper.size(); ++j)
+                upper[j] = static_cast<char>(toupper(static_cast<unsigned char>(upper[j])));
+            size_t marker = upper.find("-V");
             if (marker == std::string::npos || marker + 3 >= version.size() ||
                 !isdigit(static_cast<unsigned char>(version[marker + 2])) ||
                 !isdigit(static_cast<unsigned char>(version[marker + 3]))) continue;
             if (evidence->versions.size() < 16) evidence->versions.insert(version);
         }
         evidence->models.insert(model);
+        // Do not inspect E425 again inside an already accepted LG-E425 token.
+        i = end - 1;
     }
 }
 
@@ -272,6 +296,14 @@ void vendor_load_properties() {
         std::set<dev_t> seen;
         source = legacy ? "modem_legacy_map" : "modem_named";
         for (size_t i = 0; i < paths.size(); ++i) inspect_modem(paths[i], &seen, &evidence);
+    }
+    if (evidence.models.empty()) {
+        Evidence reported;
+        inspect(property_get("gsm.version.baseband"), true, &reported);
+        if (!reported.models.empty()) {
+            evidence = reported;
+            source = "baseband_property";
+        }
     }
     std::string model = resolve(evidence);
     std::string status = !model.empty() ? "detected" :
